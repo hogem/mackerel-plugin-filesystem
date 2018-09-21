@@ -1,0 +1,117 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+
+from __future__ import print_function
+import argparse
+import logging
+import subprocess
+import time
+import json
+import os
+import sys
+
+logging.basicConfig(level=logging.INFO)
+
+
+def df(args, inode=False):
+    command = ['df', '-Pk']
+    if inode:
+        command.append('-i')
+    if args.path:
+        for i in set(args.path):
+            command.append(i)
+
+    p = subprocess.Popen(command, stdout=subprocess.PIPE)
+    out, err = p.communicate()
+    return out
+
+
+def parse_df(out):
+    data = []
+    for row in out.split('\n')[1:]:
+        if row == '':
+            continue
+
+        item = row.rstrip().split()
+        filesystem = item[0]
+        ratio = item[-2]
+        if '%' not in ratio:
+            continue
+
+        mountpoint = item[-1].replace('/', '_')
+        size = int(item[-4])
+
+        ratio = int(ratio.replace('%', ''))
+        data.append({'filesystem': filesystem, 'size': size,
+                    'ratio': ratio, 'mountpoint': mountpoint})
+
+    return data
+
+
+def _print_mackerel_output(metric_name, value, epoch):
+    print(metric_name, value, epoch, sep='\t')
+
+
+def print_mackerel_output(args, data, inode=False):
+    for i in data:
+        mountpoint = i['mountpoint']
+        ratio = i['ratio']
+        size = i['size']
+
+        if inode:
+            prefix = '.inode_'
+        else:
+            prefix = '.'
+            size = size * 1024
+
+        timestamp = int(time.time())
+        metric_name = args.metric_key_prefix + prefix + 'ratio.' + mountpoint
+        _print_mackerel_output(metric_name, ratio, timestamp)
+
+        metric_name = args.metric_key_prefix + prefix + 'size.' + mountpoint
+        _print_mackerel_output(metric_name, size, timestamp)
+
+
+def print_mackerel_graph_definition(args):
+    print('# mackerel-agent-plugin')
+    meta = {
+        'graphs': {
+            args.metric_key_prefix + '.size': {
+                'unit': 'bytes',
+                'label': 'custom.' + args.metric_key_prefix + '.size.*',
+                'metrics': [{
+                    'name': '*',
+                    'label': '%1',
+                }],
+            },
+        },
+    }
+    print(json.dumps(meta))
+
+
+def main():
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-m', '--metric-key-prefix',
+                        default='filesystem', action='store')
+    parser.add_argument('-p', '--path', 
+                        help='Mount point (may be repeated)', action='append')
+    args = parser.parse_args()
+
+    if os.environ.get('MACKEREL_AGENT_PLUGIN_META') == '1':
+        print_mackerel_graph_definition(args)
+        sys.exit(0)
+
+    out = df(args)
+    data = parse_df(out)
+    print_mackerel_output(args, data)
+
+    out = df(args,inode=True)
+    data = parse_df(out)
+    print_mackerel_output(args, data, inode=True)
+
+
+if __name__ == '__main__':
+    main()
+
